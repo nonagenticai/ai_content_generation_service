@@ -1,0 +1,98 @@
+# ============================================================================
+# PRODUCTION MULTI-STAGE DOCKERFILE FOR AI_CONTENT_GENERATION_SERVICE
+# ============================================================================
+# Build context must be the w2v root (parent directory) so that
+# the w2v_common path dependency is accessible.
+# Port: 6310
+
+# ============================================================================
+# STAGE 1: DEPENDENCY BUILDER
+# ============================================================================
+ARG BASE_REGISTRY=docker.io
+FROM ${BASE_REGISTRY}/library/python:3.14-slim AS builder
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_SYSTEM_PYTHON=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app
+
+# Copy w2v_common (path dependency) alongside the service
+COPY w2v_common/ /w2v_common/
+
+COPY ai_content_generation_service/pyproject.toml ai_content_generation_service/uv.lock* ./
+
+RUN uv sync --frozen --no-dev --no-install-project || uv sync --no-dev --no-install-project
+
+COPY ai_content_generation_service/src/ ./src/
+
+RUN uv sync --frozen --no-dev || uv sync --no-dev
+
+# ============================================================================
+# STAGE 2: RUNTIME
+# ============================================================================
+ARG BASE_REGISTRY=docker.io
+FROM ${BASE_REGISTRY}/library/python:3.14-slim
+
+ARG BUILD_DATE="2026-02-22"
+ARG VERSION="0.1.0"
+
+LABEL org.opencontainers.image.title="AI Content Generation Service"
+LABEL org.opencontainers.image.description="Multi-provider AI content generation microservice for image and video workflows"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    PATH="/app/.venv/bin:${PATH}" \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    ca-certificates \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user
+RUN useradd --create-home -u 1000 --shell /sbin/nologin contentgenservice && \
+    mkdir -p /app /app/logs /app/data && \
+    chown -R contentgenservice:contentgenservice /app
+
+WORKDIR /app
+
+# Copy virtual environment from builder
+COPY --from=builder --chown=contentgenservice:contentgenservice /app/.venv /app/.venv
+
+# Copy application code
+COPY --chown=contentgenservice:contentgenservice ai_content_generation_service/src/ ./src/
+COPY --chown=contentgenservice:contentgenservice ai_content_generation_service/alembic.ini ./alembic.ini
+
+# Verify core dependencies
+RUN python -c "import fastapi; import sqlalchemy; print('Dependencies OK')"
+
+RUN mkdir -p /app/logs /app/data && \
+    chmod 755 /app/logs /app/data && \
+    chown -R contentgenservice:contentgenservice /app
+
+USER 1000:1000
+
+# ============================================================================
+# PORT: 6310 (AI Content Generation Service)
+# ============================================================================
+EXPOSE 6310/tcp
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD ["curl", "-f", "http://localhost:6310/health"]
+
+# 2 worker(s)
+CMD ["sh", "-c", "alembic -c /app/alembic.ini upgrade head && python -m uvicorn src.asgi:app --host 0.0.0.0 --port 6310 --workers 2 --loop uvloop --http httptools"]

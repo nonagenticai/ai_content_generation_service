@@ -1,0 +1,31 @@
+"""Centralized constants for ai_content_generation_service."""
+
+# Preview endpoint
+PREVIEW_TIMEOUT_S = 60.0
+PREVIEW_MAX_VIDEO_SIZE_BYTES = 10 * 1024 * 1024
+
+# Redis cache TTLs (seconds)
+CACHE_TTL_JOB_STATUS_S = 5
+CACHE_TTL_PROVIDERS_S = 60
+CACHE_TTL_RATE_LIMIT_S = 120
+CACHE_TTL_HEALTH_CHECK_S = 5
+
+# Polling configuration
+POLL_INITIAL_DELAY_S = 2.0
+POLL_MULTIPLIER = 1.5
+POLL_MAX_DELAY_S = 30.0
+
+# httpx client timeouts (seconds)
+HTTPX_HEALTH_CHECK_TIMEOUT_S = 5.0
+HTTPX_POLL_TIMEOUT_S = 30.0
+HTTPX_DOWNLOAD_TIMEOUT_S = 120.0
+HTTPX_CALLBACK_TIMEOUT_S = 10.0
+HTTPX_AUTH_TIMEOUT_S = 2.0
+
+# Callback delivery
+CALLBACK_MAX_RETRIES = 3
+CALLBACK_BACKOFF_SEQUENCE = [1, 2, 4]
+
+# Seed range (32-bit unsigned)
+SEED_MIN = 0
+SEED_MAX = 2**32 - 1

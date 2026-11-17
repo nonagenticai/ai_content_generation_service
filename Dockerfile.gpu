@@ -1,0 +1,100 @@
+ARG BASE_REGISTRY=docker.io
+# ============================================================================
+# GPU-ENABLED DOCKERFILE FOR AI_CONTENT_GENERATION_SERVICE (Wan2.2 TI2V-5B)
+# ============================================================================
+# CUDA devel base needed in builder for flash_attn compilation.
+# Single-context build: w2v-common resolves from the public git source.
+# Build with: docker buildx build -f Dockerfile.gpu --network=host \
+#   (no host mapping needed)
+# Requires: NVIDIA Container Toolkit on the host (runtimeClassName: nvidia)
+# Port: 6310
+
+# ============================================================================
+# Stage 1: Builder (CUDA devel for flash_attn compilation)
+# ============================================================================
+FROM ${BASE_REGISTRY}/nvidia/cuda:12.8.1-devel-ubuntu22.04 AS builder
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive \
+
+RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    python3.14 python3.14-dev python3.14-venv \
+    build-essential curl git ca-certificates \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH" \
+    UV_PYTHON=python3.14
+
+WORKDIR /app
+
+# Copy dependency manifests first for layer caching
+COPY pyproject.toml uv.lock* README.md ./
+COPY alembic.ini ./
+
+# Install base dependencies; w2v-common comes from its public git tag
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Copy application source
+COPY src/ ./src/
+
+# Install the project itself
+RUN uv sync --frozen --no-dev
+
+# Install Wan2.2 + flash-attn (needs CUDA headers from devel base)
+ENV VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
+
+RUN uv pip install --python /app/.venv/bin/python3.14 \
+    --no-cache --no-build-isolation \
+    "git+https://github.com/Wan-Video/Wan2.2.git" \
+    && rm -rf /root/.cache /tmp/*
+
+# ============================================================================
+# Stage 2: Runtime (CUDA runtime for flash_attn + torch)
+# ============================================================================
+FROM ${BASE_REGISTRY}/nvidia/cuda:12.8.1-runtime-ubuntu22.04
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    python3.14 python3.14-venv \
+    libpq5 curl ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user
+RUN useradd -m -u 1000 contentgenservice && \
+    mkdir -p /app /app/logs /app/data && \
+    chown -R contentgenservice:contentgenservice /app
+
+WORKDIR /app
+
+# Copy virtual environment and application from builder
+COPY --from=builder --chown=contentgenservice:contentgenservice /app/.venv /app/.venv
+COPY --chown=contentgenservice:contentgenservice src/ ./src/
+COPY --chown=contentgenservice:contentgenservice alembic.ini ./alembic.ini
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+USER 1000:1000
+
+EXPOSE 6310
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD ["curl", "-f", "http://localhost:6310/health"]
+
+CMD ["sh", "-c", "alembic -c /app/alembic.ini upgrade head && python -m src.asgi"]

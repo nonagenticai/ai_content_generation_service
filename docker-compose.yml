@@ -1,0 +1,192 @@
+services:
+  # ============================================================================
+  # PostgreSQL Database
+  # ============================================================================
+  ai_content_generation_service_postgres:
+    image: postgres:18-alpine
+    container_name: ai_content_generation_service_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ai_content_generation_service
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5460:5432"
+    volumes:
+      - ai_content_generation_service_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - contentgen-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # PostgreSQL — test database (pytest only, never the app)
+  #
+  # Deliberately a SEPARATE server from the app postgres above, not just a second
+  # database inside it: it mirrors the CI container, where the gitops archetype
+  # runs a stock postgres:18 with POSTGRES_USER=ci_test — which makes ci_test a
+  # SUPERUSER. Pointing pytest at the app's restricted `postgres` role would
+  # diverge from CI on anything needing elevated rights (CREATEROLE etc).
+  #
+  # tmpfs, no named volume: test data is worthless by definition, and a persisted
+  # volume is how a stale schema survives across model changes.
+  # ============================================================================
+  ai_content_generation_service_test_postgres:
+    image: postgres:18-alpine
+    container_name: ai_content_generation_service_test_postgres
+    environment:
+      # Throwaway local-test credentials, not a secret. Must match the local
+      # default in tests/conftest.py and scripts/ci-local.sh.
+      POSTGRES_USER: ci_test
+      POSTGRES_PASSWORD: ci_test_password_secure # pragma: allowlist secret
+      POSTGRES_DB: ai_content_generation_service_ci
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5472:5432"
+    # postgres:18 keeps data in a versioned subdir (/var/lib/postgresql/18/docker)
+    # and REFUSES TO START if you mount over the old /var/lib/postgresql/data path.
+    # The image's own guidance is a single mount at /var/lib/postgresql.
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ci_test -d ai_content_generation_service_ci"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    networks:
+      - contentgen-network
+
+  # ============================================================================
+  # Redis Cache
+  # ============================================================================
+  ai-content-generation-service-redis:
+    image: redis:7-alpine
+    container_name: ai_content_generation_service_redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6400:6379"
+    volumes:
+      - ai_content_generation_service_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - contentgen-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # AI Content Generation Service API
+  # ============================================================================
+  ai-content-generation-service-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai_content_generation_service_api
+    environment:
+      # Application
+      ENVIRONMENT: production
+      APP_NAME: AI Content Generation Service
+      APP_VERSION: 0.1.0
+
+      # Database
+      DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-changeme}@ai_content_generation_service_postgres:5432/ai_content_generation_service
+      POSTGRES_POOL_MIN_SIZE: 2
+      POSTGRES_POOL_MAX_SIZE: 10
+      DATABASE_POOL_TIMEOUT: 30
+      DATABASE_POOL_RECYCLE: 3600
+      DATABASE_ECHO: "false"
+
+      # Redis
+      REDIS_URL: redis://ai-content-generation-service-redis:6379/0
+      REDIS_MAX_CONNECTIONS: 10
+
+      # API
+      API_HOST: 0.0.0.0
+      API_PORT: 6310
+      API_DEBUG: "false"
+      API_RELOAD: "false"
+      API_CORS_ORIGINS: "http://localhost:*,http://127.0.0.1:*"
+
+      # Auth
+      AUTH_ENABLED: "false"
+      DEFAULT_TENANT_ID: 0195f48b-d000-7000-8000-000000000001
+
+      # Storage
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_PATH: /app/data/content-generation
+
+      # Logging
+      LOG_LEVEL: INFO
+      LOG_JSON_LOGS: "false"
+
+      # Runway
+      RUNWAY_API_KEY: ""
+      RUNWAY_ENABLED: true
+
+      # Kling
+      KLING_API_KEY: ""
+      KLING_ENABLED: true
+
+      # Veo (Google)
+      VEO_API_KEY: ""
+      VEO_ENABLED: true
+
+      # Sora (OpenAI)
+      SORA_API_KEY: ""
+      SORA_ENABLED: true
+
+      # OpenAI Images
+      DALLE_ENABLED: ${DALLE_ENABLED:-false}
+      DALLE_API_KEY: ${OPENAI_API_KEY:-}
+      DALLE_MODEL: ${DALLE_MODEL:-gpt-image-1}
+      DALLE_SIZE: ${DALLE_SIZE:-1792x1024}
+      DALLE_QUALITY: ${DALLE_QUALITY:-high}
+
+      # Seedance
+      SEEDANCE_API_KEY: ""
+      SEEDANCE_ENABLED: true
+
+      IMAGE_GENERATION_DEFAULT_PROVIDER: ${CONTENT_GENERATION_DEFAULT_PROVIDER:-openai_images}
+    ports:
+      - "6310:6310"
+    volumes:
+      - ai_content_generation_service_data:/app/data/content-generation
+      - ./logs:/app/logs
+    depends_on:
+      ai_content_generation_service_postgres:
+        condition: service_healthy
+      ai-content-generation-service-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6310/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - contentgen-network
+    restart: unless-stopped
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  contentgen-network:
+    driver: bridge
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  ai_content_generation_service_postgres_data:
+    name: ai_content_generation_service_postgres_data
+  ai_content_generation_service_redis_data:
+    name: ai_content_generation_service_redis_data
+  ai_content_generation_service_data:
+    name: ai_content_generation_service_data

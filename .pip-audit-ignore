@@ -1,0 +1,8 @@
+# Each line is one vulnerability ID to skip during pip-audit.
+# Format: ID  # package date (reason)
+# Add only when no fix version exists upstream. Re-evaluate periodically.
+CVE-2026-44513  # diffusers 2026-05-07 (transitive pin blocks fix to >=0.38.0)
+PYSEC-2026-41   # diffusers 2026-05-23 (same wan transitive pin blocks fix to >=0.38.0)
+CVE-2026-45804  # diffusers 2026-05-23 (same wan transitive pin blocks fix to >=0.38.0)
+CVE-2026-31253  # flash-attn 2026-05-18 (no fix upstream; 2.8.3 is latest; GPU-only local-video extra)
+CVE-2025-3000   # torch 2.11.0 2026-06-17 (no fix upstream; pinned for GPU/ML runtime — owner-approved)

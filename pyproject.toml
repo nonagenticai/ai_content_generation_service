@@ -1,0 +1,230 @@
+[project]
+license = "Apache-2.0"
+name = "ai-content-generation-service"
+version = "0.1.0"
+description = "Multi-provider AI content generation microservice for image and video workflows"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[all]>=0.135.0",
+
+    "uvicorn[standard]>=0.41.0",
+
+    "psycopg[binary,pool]>=3.3.0",
+
+    "sqlalchemy[asyncio]>=2.0.48",
+
+    "pydantic>=2.12.0",
+
+    "pydantic-settings>=2.14.2",
+
+    "python-dotenv>=1.2.0",
+
+    "redis>=7.3.0",
+
+    "uuid-v7>=1.0.0,<2.0.0",
+
+    "alembic>=1.18.0",
+
+    "httpx[http2]>=0.28.0",
+
+    "cachetools>=7.0.0",
+
+    "miniopy-async>=1.23.0",
+
+    "prometheus-client>=0.24.0",
+
+    "opentelemetry-api>=1.45.2",
+
+    "opentelemetry-sdk>=1.40.0",
+
+    "opentelemetry-exporter-otlp-proto-grpc>=1.40.0",
+
+    "opentelemetry-instrumentation-fastapi>=0.61b0",
+
+    "opentelemetry-instrumentation-httpx>=0.61b0",
+
+    "opentelemetry-instrumentation-sqlalchemy>=0.61b0",
+
+    "w2v-common>=0.113.0",  # 0.113: providers.resolve_provider_slot (W2V_PROVIDER_SLOTS); 0.104: strict attribution accepts the app key (G5); KEEP_TENANT_SOURCE preserve-on-omit; net.validate_public_url: CGNAT 100.64/10 + IPv6 + fail-closed DNS
+    "pillow>=13.0.0",
+
+    # --- Security floors on transitive dependencies ---
+    # Neither of these is imported by this service directly; both arrive through
+    # other pins — aiohttp via `miniopy-async` (and its `aiohttp-retry` dep), and
+    # cryptography via `w2v-common`. Both are also pulled by `dashscope`, which
+    # reaches the resolution through the `wan` pin in the `local-video` dependency
+    # group. The lock is already at safe versions; these floors are what stop it
+    # drifting back. A lock is a point-in-time resolution, so the next unrelated
+    # `uv lock` is free to walk an undeclared transitive down again. The declared
+    # floor is the only thing that binds it.
+    #
+    # aiohttp 3.14.1 was flagged by CVE-2026-59881 + CVE-2026-69243 (fixed in
+    # 3.14.2) and CVE-2026-69244 (fixed in 3.14.3); 3.14.3 clears all three.
+    # 3.14.3 is in turn flagged by CVE-2026-111063 + CVE-2026-111064 +
+    # GHSA-2g87-pp6c-29x5 (fixed in 3.14.4).
+    "aiohttp>=3.14.4",
+    # cryptography: CVE-2026-69247 (GHSA-g6cj-pr64-35w5) was introduced in
+    # 44.0.0 and fixed in 50.0.0, so the previously-locked 49.0.0 was affected.
+    "cryptography>=50.0.0",
+    # h2: CVE-2026-71554 affects 4.3.0 and is fixed in 4.4.1. It arrives as a
+    # transitive of the `httpx[http2]` extra declared above.
+    "h2>=4.4.1",
+]
+
+[project.scripts]
+ai-content-generation-service = "src.asgi:main"
+
+# NOTE: GPU/vendor deps (torch, wan -> flash-attn transitive) live in a
+# dependency-group rather than [project.optional-dependencies] so that
+# `uv sync --all-extras` (the CI default) does NOT pull them. flash-attn
+# requires nvcc/CUDA to build from source and CI runners lack both.
+# GPU hosts opt in explicitly with `uv sync --group local-video`.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[dependency-groups]
+dev = [
+    # PYSEC-2026-3721: pip < 26.2 is vulnerable (pulled in transitively by pip-audit -> pip-api -> pip)
+    "pip>=26.2",
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.0.0",
+    "pytest-timeout>=2.4.0",
+    "httpx>=0.28.0",
+    "ruff>=0.15.0",
+    "ty>=0.0.23",
+    "pip-audit>=2.10.0",
+    "detect-secrets>=1.5.0",
+    "bandit>=1.9.4",
+    "fakeredis>=2.34.0",
+    "lupa>=2.5",
+]
+local-video = [
+    "torch>=2.4.0",
+    "wan",
+]
+
+[tool.uv.sources]
+wan = { git = "https://github.com/Wan-Video/Wan2.2.git" }
+# The published source tree resolves its shared library from the public
+# repository at the release tag; the private index is not reachable here.
+w2v-common = { git = "https://github.com/nonagenticai/w2v_common", tag = "v0.115.4" }
+
+[tool.uv]
+override-dependencies = [
+    # miniopy-async (1.23.5, the LATEST) caps the CA-certificate bundle:
+    #   certifi>=2025.1.31,<2026.0.0
+    # That is lazy upper-bounding, not a real incompatibility -- certifi's entire
+    # public API is where()/contents() and has been stable for years, while the
+    # package's whole purpose is to ship CURRENT roots. Left alone the cap pins
+    # every MinIO-using repo in this fleet to a trust store from Nov 2025, and no
+    # relock cadence can move it (verified by making uv name the constraint).
+    #
+    # NOT overriding miniopy-async's argon2-cffi<24.0.0 alongside it: that is a
+    # MAJOR bump with real API surface, so it needs its own testing rather than
+    # riding along with a data-only package.
+    "certifi>=2026.7.22",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "I", "N", "W", "UP", "ANN", "B", "BLE", "A", "S", "C901",
+    "RUF", "RET", "SIM", "ASYNC", "PTH", "TID251",
+]
+ignore = [
+    "E501",
+    "B008",
+    # ASYNC240 (pathlib in async) — fleet follow-up; sync stat calls are
+    # microsecond-fast and not a latency hotspot today.
+    "ASYNC240",
+    # ASYNC109 (timeout-as-param in async fn) — canonical w2v HTTP client
+    # wrapper API; timeout forwarded to httpx/asyncio.wait_for.
+    "ASYNC109"
+]
+
+# uuid7 is the id standard (stdlib, py3.14). TID251 bans `uuid4` in production
+# code via ruff — enforced in CI (`ruff check .`), not only local pre-commit.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"uuid.uuid4".msg = "uuid7 is the w2v id standard — use uuid.uuid7() (stdlib, py3.14)."
+
+[tool.ruff.lint.per-file-ignores]
+"src/database/migrations/*" = ["I001", "ANN"]
+"tests/**/*.py" = ["S101", "S104", "S105", "S106", "S107", "S108", "ANN", "PTH", "ASYNC230", "ASYNC240", "SIM117", "TID251"]
+
+# ── ANN401 ratchet (see [tool.ruff.lint].ignore note) ─────────────────────────
+# These files still carry `Any` in a function signature. Do NOT add to this list.
+# When you type a file's seam with pydantic models, DELETE its line here — that
+# re-enables ANN401 for the file and locks the win in. Target: empty.
+"src/api/content_routes.py" = ["ANN401"]
+"src/api/routes/dependencies.py" = ["ANN401"]
+"src/asgi.py" = ["ANN401"]
+"src/observability/tracing.py" = ["ANN401"]
+"src/services/cleanup_service.py" = ["ANN401"]
+"src/services/providers/base.py" = ["ANN401"]
+"src/services/providers/kling.py" = ["ANN401"]
+"src/services/providers/mock.py" = ["ANN401"]
+"src/services/providers/runway.py" = ["ANN401"]
+"src/services/providers/seedance.py" = ["ANN401"]
+"src/services/providers/sora.py" = ["ANN401"]
+"src/services/providers/stub.py" = ["ANN401"]
+"src/services/providers/veo.py" = ["ANN401"]
+"src/services/providers/wan.py" = ["ANN401"]
+"src/services/reaper_service.py" = ["ANN401"]
+"src/services/video_generation_service.py" = ["ANN401"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "unit: unit tests",
+    "integration: integration tests",
+]
+filterwarnings = [
+    "ignore:coroutine '.*AsyncMockMixin._execute_mock_call.*' was never awaited:RuntimeWarning",
+    "ignore:coroutine '.*slow_communicate.*' was never awaited:RuntimeWarning",
+]
+
+[tool.coverage.report]
+fail_under = 80
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.rules]
+import-not-found = "error"
+unresolved-reference = "error"
+missing-attribute = "error"
+possibly-unresolved-reference = "error"
+possibly-missing-attribute = "error"
+missing-argument = "error"
+invalid-argument-type = "error"
+invalid-explicit-return = "error"
+
+# Optional GPU/vendor deps (wan, flash_attn, torch, diffusers/PIL, huggingface_hub)
+# aren't in the prod lockfile; ty rightly can't resolve them. Scope the
+# import-not-found suppression to the Wan provider module instead of
+# scattering source-level `# ty: ignore[import-not-found]` comments.
+[[tool.ty.overrides]]
+include = ["src/services/providers/wan.py"]
+
+[tool.ty.overrides.rules]
+import-not-found = "ignore"
+
+[tool.bandit]
+targets = ["src"]
+exclude_dirs = ["tests", "src/database/migrations"]
+skips = ["B105", "B311"]  # B105: Lua script variable false positive; B311: random used for jitter
